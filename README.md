@@ -161,81 +161,39 @@ Both use the same `BrandProcess.minCoverage`:
 
 The scheduler doesn't distinguish — it just tries to fill `minCoverage` slots from available candidates.
 
-## Design Questions & Answers
+## Design Questions and Answers
 
-### 1. Data Model
+### 1. How did I model employees, brands, processes, and pods?
 
-**Q: How did you model the data?**
+Each employee belongs to a pod and has a preferred weekly off. Brands and processes are separate records, joined by BrandProcess, which stores the operating rule and minimum coverage for that particular brand-process pair. Assignments link employees to the work they can cover. Approved leave and public holidays are separate scheduling inputs, and a monthly roster contains one entry per employee per date.
 
-`Employee` belongs to `Pod`. `Brand` and `Process` are independent masters. The join entity `BrandProcess` holds the operating rule override and minimum coverage. Employees are linked to work through `Assignment` (many-to-many between Employee and BrandProcess). `Leave` and `PublicHoliday` are constraint inputs. `Roster` → `RosterEntry` is the output, one entry per employee per day.
+### 2. How does roster generation work, and how do I check the result?
 
-### 2. Roster Generation
+I chose a deterministic greedy scheduler because its decisions are repeatable and relatively easy to explain. For each day, it finds the brand-processes that operate, considers their active assigned employees, and handles the processes with the fewest candidates first. It assigns up to each process's minimum coverage, skipping employees who are on approved leave or already assigned that day. Among the remaining employees, it prefers people who are not on their weekly off and have had less work so far that month. A separate validation pass checks the saved entries against current coverage rules and approved leave, then reports any conflicts.
 
-**Q: How does the generation algorithm work?**
+### 3. How do single-resource and multi-resource brands differ?
 
-Deterministic greedy scheduler. For each day:
-1. Build demand list of operating brand-processes
-2. Sort by scarcity (fewest candidates first)
-3. Assign required employees, preferring those NOT on leave, NOT already working today, NOT on preferred weekly off
-4. Fairness: sort by month-to-date workload
-5. Everyone else gets OFF status
+They use the same model and scheduling logic. A single-resource brand-process typically has one employee assignment and minimum coverage of one. A process staffed by several employees has multiple assignments, and its minimum coverage can be raised when more than one person is needed. The scheduler tries to fill the configured number of slots from the employees assigned to that process.
 
-Validation re-derives conflicts from stored entries, so manual edits are validated immediately.
+### 4. What happens if the only assigned employee is unavailable?
 
-### 3. Single vs Multi-Resource Brands
+When generating a roster, the scheduler skips an employee who has approved leave. If that leaves a process below its minimum coverage, the app reports a critical coverage gap. If leave is added after generation, the existing roster entry is not changed automatically; validation flags an employee who is still marked as working on approved leave. The manager can update the roster and review the resulting coverage. Backup suggestions include employees already assigned to the same brand-process, so a manager must add an assignment first if no backup is configured.
 
-**Q: How do you handle both?**
+### 5. How does the app handle conflicts or insufficient staffing?
 
-Both use the same `BrandProcess.minCoverage`. Single-resource: `minCoverage = 1`, one `Assignment`. Multi-resource: multiple `Assignment` rows, `minCoverage` can be > 1. The scheduler doesn't distinguish — it fills `minCoverage` slots from available candidates.
+The app reports critical issues for coverage gaps, brand-processes with no assigned employees, and work scheduled during approved leave. Working on an employee's preferred weekly off is a warning. Critical issues block publishing; warnings remain visible for the manager to consider. After a manual roster edit, the app recalculates conflicts so the manager can review the impact before publishing.
 
-### 4. Single Employee Unavailable
+### 6. Which parts are automated, and which stay under human control?
 
-**Q: What happens when the only resource is on leave?**
+The app generates a monthly draft, applies operating calendars and approved leave, allocates assigned employees, calculates coverage, and reports conflicts. The operations manager maintains assignments, approves or updates leave, chooses how to resolve gaps and warnings, makes manual edits, and publishes the roster. I left those decisions with a person because the scheduler can surface constraints, but the operations team must decide which staffing changes are workable.
 
-Generation excludes them (leave check), so coverage falls to 0. Validation emits a `COVERAGE_GAP` critical conflict. The coverage view shows the gap in red. The ops manager can assign a backup (suggestions endpoint ranks colleagues) or escalate.
+### 7. What would I change if the team and brand count doubled?
 
-### 5. Conflicts & Insufficient Staffing
+I would first measure roster generation time and database query performance, then add indexes or pagination where needed. If generation became too slow for a normal web request, I would move it to a background job. I would also consider a constraint solver if the greedy approach stopped producing useful schedules as the rules became more complex. I would avoid splitting the work strictly by pod without checking cross-brand assignments, since an employee may cover several processes.
 
-**Q: How are conflicts flagged?**
+### 8. What would I improve with one additional week?
 
-Conflicts are typed and severity-tagged:
-- **Critical** (`COVERAGE_GAP`, `NO_EMPLOYEES_ASSIGNED`, `LEAVE_CONFLICT`) block publishing
-- **Warnings** (`WEEKLY_OFF_OVERRIDE`) are advisory
-
-The roster is never silently invalid — it's generated, flagged, and the UI requires resolution.
-
-### 6. Automation vs Human Control
-
-**Q: What's automated vs manual?**
-
-**Automated:**
-- Allocating working days
-- Honoring operating calendars
-- Respecting weekly offs, holidays, approved leave
-- Computing coverage
-
-**Human:**
-- Approving leave
-- Adding/removing assignments
-- Deciding whether to override a preferred weekly off
-- Publishing
-
-The reasoning: staffing decisions have real-world consequences, while combinatorial checking is best done by machine.
-
-### 7. If Team Doubled
-
-**Q: How would you scale?**
-
-The model already scales (no hard-coded team size). First change: move generation to a background job (BullMQ) with per-pod partitioning. Add indexes on `RosterEntry`. Replace greedy heuristic with a constraint solver (OR-Tools CP-SAT) for better fairness and fewer gaps.
-
-### 8. With One More Week
-
-**Q: What would you add next?**
-
-1. OR-Tools-based optimizer behind the same API (scheduler/validator stay unchanged)
-2. Roster versioning with diff view for "what changed after this leave"
-3. CSV/Excel export
-4. Approval workflow with pod-lead sign-off
+I would start with automated tests for single-resource leave, multi-resource minimum coverage, process-specific calendars, holidays, and the rule that critical conflicts block publishing. Then I would improve backup recommendations. They currently rank employees already assigned to the affected brand-process; a useful next step would be to help the manager identify and explicitly approve other eligible backups.
 
 ## Key Design Decisions
 
