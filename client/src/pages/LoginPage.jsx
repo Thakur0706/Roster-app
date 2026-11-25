@@ -28,7 +28,14 @@ export default function LoginPage() {
       }
       navigate('/roster');
     } catch (err) {
-      setError(err.response?.data?.error || 'Invalid email or password');
+      const apiError = err.response?.data?.error;
+      const message =
+        typeof apiError === 'string'
+          ? apiError
+          : typeof apiError?.message === 'string'
+            ? apiError.message
+            : 'Invalid email or password';
+      setError(message);
     } finally {
       setBusy(false);
     }
